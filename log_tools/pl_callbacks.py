@@ -166,7 +166,7 @@ class WandbLoggerCallback(Callback):
         del video
         
         # Save dice socres and hausdorff distances
-        dice_scores = outputs["dice_scores"]
+        dice_scores = outputs["dice_scores"].squeeze(-1)
         self.test_dice_scores.append(dice_scores)
         self.test_hd_scores.append(hd_scores)
         self.test_gt_im.append(gt_img)
@@ -194,16 +194,14 @@ class WandbLoggerCallback(Callback):
     def on_test_epoch_end(self, trainer, pl_module):
         # Save averaged Dice scores, maximal Hausdorff distances, and gt/pred images over test set
         all_dice = torch.stack(self.test_dice_scores, dim=0)
-        avg_dice = all_dice.mean(dim=0).numpy()
+        all_dice = all_dice.numpy()
         all_hd = torch.stack(self.test_hd_scores, dim=0)
-        inf_mask = torch.isinf(all_hd)
-        all_hd[inf_mask] = 0.0
-        max_hd = all_hd.max(dim=0)[0].numpy()
+        all_hd = all_hd.numpy()
         im_gts = self.test_gt_im
         seg_gts = self.test_gt_seg
         seg_preds = self.test_pred_seg
-        pl_module.test_results = {"avg_dice": avg_dice,
-                                  "max_hd": max_hd,
+        pl_module.test_results = {"dice": all_dice,
+                                  "hd": all_hd,
                                   "im_gt": im_gts,
                                   "seg_gt": seg_gts,
                                   "seg_pred": seg_preds,
