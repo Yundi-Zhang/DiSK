@@ -47,8 +47,8 @@ class PerceiverEncoder(nn.Module):
             coords_[:, :coords.shape[1]] = coords
             coords = coords_
         if self.val_needs_padding:
-            values_ = torch.zeros((coords.shape[0], self.info_token_width), device=coords.device)
-            values_[:, :coords.shape[1]] = values
+            values_ = torch.zeros((values.shape[0], self.info_token_width), device=values.device)
+            values_[:, :values.shape[1]] = values
             values = values_
         info_tokens = values + coords
 

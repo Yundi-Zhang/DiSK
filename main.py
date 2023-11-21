@@ -210,7 +210,7 @@ def main_eval(weights_path: str, config_path: Optional[str] = None, exp_name: Op
     trainer.test(model, dataloaders=DataLoader(test_dataset, shuffle=False))
 
     # Save test results
-    test_results = model.results
+    test_results = model.test_results
     root_dir.mkdir(exist_ok=True)
     with open(root_dir / "test_results.pkl", "wb") as f:
         pickle.dump(test_results, f)

@@ -81,6 +81,9 @@ class KTSTModule(pl.LightningModule):
         self.dice_loss = DiceLoss(reduction="none")
         self._use_seg_bce = kwargs.get("use_seg_bce", True)
         self.num_classes = self.train_dataset.num_classes
+        
+        # Save the test results
+        self.test_results = dict()
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
@@ -137,7 +140,7 @@ class KTSTModule(pl.LightningModule):
             return_dict["seg_bce_loss"] = seg_bce_loss
 
         return_dict["seg_loss"] = seg_loss
-        return seg_loss, return_dict
+        return seg_loss, return_dict, dice
     
     def regularization_criterion(self, latent_codes: Union[torch.Tensor, List[torch.Tensor]]) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -172,14 +175,18 @@ class KTSTModule(pl.LightningModule):
         # Compute loss
         return_dict = dict()
         loss = torch.zeros((1,), dtype=torch.float32, device=input_coords.device)
-        seg_loss, seg_loss_dict = self.segmentation_criterion(seg.permute(1, 0)[None], seg_values)
+        seg_loss, seg_loss_dict, dice = self.segmentation_criterion(seg.permute(1, 0)[None], seg_values)
         loss += seg_loss
         return_dict = {**return_dict, **seg_loss_dict}
         reg_loss, reg_loss_dict = self.regularization_criterion(latent_codes)  # compute regularization loss
         loss += reg_loss
         return_dict = {**return_dict, **reg_loss_dict}
 
-        return {'loss': loss, **return_dict, 'seg': seg.detach().cpu()}
+        return {'loss': loss, 
+                **return_dict, 
+                'seg': seg.detach().cpu(), 
+                'dice_scores': dice.detach().cpu(),
+                }
 
     def validation_step(self, batch, batch_idx):
         return self.training_step(batch, batch_idx)

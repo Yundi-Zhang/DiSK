@@ -104,7 +104,6 @@ def overlay(seg: np.ndarray, image: np.ndarray, overlay_filename: Optional[str] 
     image = cv2.merge([image, image, image]) if len(image.shape) != 3 else image
     # cv2.imwrite(str(overlay_filename), image)
     colors = [(255, 255, 0), (51,255,153)]
-    unique = np.unique(seg_gray)
     # Myo
     th = np.where(seg_gray == 2, 1, 0)
     contours, hierarchy = cv2.findContours(th.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -132,6 +131,9 @@ def generate_contour_over_image(image: np.ndarray, seg: np.ndarray, gt_seg: np.n
         overlay_gt_list.append(overlay_gt)
     overlay_pred_arr = np.stack(overlay_pred_list, axis=2)
     overlay_gt_arr = np.stack(overlay_gt_list, axis=2)
+    # Normalize arrays back to [0, 1)
+    overlay_pred_arr = normalize_image(overlay_pred_arr)
+    overlay_gt_arr = normalize_image(overlay_gt_arr)
     return overlay_pred_arr, overlay_gt_arr
 
 

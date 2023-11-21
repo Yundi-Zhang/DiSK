@@ -16,6 +16,11 @@ class WandbLoggerCallback(Callback):
         self.train_epoch_start_time = None
         self.val_epoch_start_time = None
         self.test_epoch_start_time = None
+        self.test_dice_scores = []
+        self.test_hd_scores = []
+        self.test_gt_im = []
+        self.test_gt_seg = []
+        self.test_pred_seg = []
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, *args) -> None:
         # Get rid of image tensors
@@ -85,7 +90,7 @@ class WandbLoggerCallback(Callback):
         log_dict = {**log_dict, **metrics}
         pl_module.log_dict(log_dict)
 
-        # Log images/videos
+        # Log videos
         subject_idx = int(subject_idx)
         if subject_idx < 12:
             # Recreate GT im and seg arrays
@@ -110,71 +115,63 @@ class WandbLoggerCallback(Callback):
             del video
         return
 
-    # TODO: Refactor
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, *args) -> None:
-        # Load data from test dataset
-        input_coords, input_values, sample_indices, idx, dec_coords, seg_values, img_values, k_values, gt_shape, t_idx = batch
-        input_coords, input_values, dec_coords = input_coords.squeeze(0), input_values.squeeze(0), dec_coords.squeeze(0)
-        seg_values, img_values, k_values = seg_values.squeeze(0), img_values.squeeze(0), k_values.squeeze(0)
-        sample_indices, subject_idx, gt_shape = sample_indices.squeeze(0), int(idx[0]), gt_shape.squeeze(0)
-        test_gt_shape = seg_values.reshape(*gt_shape[:2], -1, gt_shape[-1]).shape
-        gt_seg = seg_values.reshape(test_gt_shape).cpu().numpy()
-        gt_img = img_values.reshape(test_gt_shape).cpu().numpy().__abs__()
-        gt_kspace = k_values.reshape(test_gt_shape).cpu().numpy().__abs__()
+        # Get rid of image tensors
+        log_dict = {f"test/{k}": v for k, v in outputs.items() if not isinstance(v, torch.Tensor) or len(v.shape) <= 1}
+        # Convert any tensor into a scalar
+        log_dict = {k: v if not isinstance(v, torch.Tensor) else v.detach().cpu().item() for k, v in log_dict.items()}
         
-        # If we are evaluating a volume, we only want to evaluate the middle slice
-        self.if_evaluate_volume = test_gt_shape[2] != 1
-        if self.if_evaluate_volume:
-            z_idx = 4
-            test_gt_shape = (*gt_shape[:2], 1, gt_shape[-1])
-            gt_seg = gt_seg[..., z_idx, :]
-            gt_img = gt_img[..., z_idx, :]
-            gt_kspace = gt_kspace[..., z_idx, :]
+        # Load data from test dataset
+        input_coords, input_values, sample_indices, idx, dec_coords, seg_values, img_values, k_values, gt_shape = batch
+        seg_values, img_values, k_values = seg_values.squeeze(0), img_values.squeeze(0), k_values.squeeze(0)
+        input_coords, input_values, dec_coords = input_coords.squeeze(0), input_values.squeeze(0), dec_coords.squeeze(0)
+        sample_indices, subject_idx, gt_shape = sample_indices.squeeze(0), idx[0], gt_shape.squeeze(0)
         
         # Evaluate the model
-        pred_seg_values = pl_module.evaluate(input_coords, input_values, dec_coords, gt_shape=test_gt_shape, sample_indices=sample_indices, as_cpu=True)
-        pred_seg = torch.argmax(pred_seg_values, dim=-1).numpy().reshape(test_gt_shape)
-        side_by_side = get_side_by_side(gt_img, gt_seg, recon_pred=np.ones_like(gt_img), seg_pred=pred_seg, as_video=True)
-        side_by_side_videos = wandb.Video(side_by_side.astype(np.uint8), caption=f"Subject {subject_idx}")
-        pred_seg_1hot = to_1hot(torch.argmax(pred_seg_values, dim=-1), num_class=pl_module.num_classes)[None].cpu().moveaxis(-1, 1)
+        pred_seg_ = pl_module.evaluate(input_coords, input_values, dec_coords, gt_shape=gt_shape, as_cpu=True)
+        gt_shape = tuple(gt_shape)
+        # Calculate metrics for segmentation
+        pred_labels_ = torch.argmax(pred_seg_, dim=-1)
+        pred_set = to_1hot(pred_labels_, num_class=pred_seg_.shape[-1]).reshape((*gt_shape, pred_seg_.shape[-1]))
+        gt_set = to_1hot(seg_values.squeeze(-1), num_class=pred_seg_.shape[-1]).reshape((*gt_shape, pred_seg_.shape[-1]))
+        # Hausdorff distance metric
+        hd_scores = hausdorff_distance(pred_set.permute(-1, -2, 0, 1), gt_set.permute(-1, -2, 0, 1))
         
+        # Log metrics
+        metrics = {"test/hd_LV_Pool": hd_scores[1],
+                   "test/hd_LV_Myo": hd_scores[2],
+                   "test/hd_RV_Pool": hd_scores[3],
+                   "test/hd_FG": hd_scores[1:].max(),
+                   }
+        log_dict = {**log_dict, **metrics}
+        pl_module.log_dict(log_dict)
+        
+        # Log videos
+        # Recreate GT im and seg arrays
+        gt_seg = seg_values.reshape(gt_shape).cpu().numpy()
+        gt_img = img_values.reshape(gt_shape).cpu().numpy().__abs__()
+        pred_labels = pred_labels_.reshape(gt_shape).detach().cpu().numpy()
+        # Zero-fill K-space
+        input_values, sample_indices = input_values.squeeze(0), sample_indices.squeeze(0)
+        input_k = torch.zeros(gt_shape, dtype=torch.complex64)
+        sample_indices = sample_indices.cpu().numpy()
+        input_k[tuple(sample_indices)] = input_values[:, 0].cpu()
+        input_k = input_k.cpu().numpy()
         # Generate overlay videos
-        overlay_pred_list, overlay_gt_list = generate_contour_over_image(gt_img, pred_seg, gt_seg)
-        overlay_pred = np.transpose(np.stack(overlay_pred_list, axis=-1), (3, 2, 0, 1))
-        overlay_gt = np.transpose(np.stack(overlay_gt_list, axis=-1), (3, 2, 0, 1))
-        overlay_pred_video = wandb.Video(overlay_pred.astype(np.uint8), caption=f"Subject {subject_idx}")
-        overlay_gt_video = wandb.Video(overlay_gt.astype(np.uint8), caption=f"Subject {subject_idx}")
-        
-        # Calculate metrics for segmentation and reconstruction
-        gt_seg_tensor = torch.from_numpy(gt_seg).to(torch.float32).reshape(1, -1)
-        gt_seg_1hot = to_1hot(gt_seg_tensor, num_class=pl_module.num_classes)
-        dice = 1 - self.dice_loss(pred_seg_1hot.round(), gt_seg_1hot)
-        dice_scores = dice.mean(0).squeeze()
-        pred_set = to_1hot(torch.from_numpy(pred_seg), num_class=pl_module.num_classes).squeeze(3).moveaxis([1, 3], [0, 1])
-        gt_set = to_1hot(torch.from_numpy(gt_seg), num_class=pl_module.num_classes).squeeze(3).moveaxis([1, 3], [0, 1])
-        hd_scores = hausdorff_distance(pred_set, gt_set)
-        
-        # Log the results
+        video = get_side_by_side(gt_img, gt_seg, input_k, pred_labels, num_classes=pred_seg_.shape[-1])
+        video = wandb.Video(video, caption=f"Subject_{subject_idx}")
         wandb.log({
-            "test mri images": side_by_side_videos,
-            "test pred images": overlay_pred_video,
-            "test gt images": overlay_gt_video,
-            "test/dice_LV_Pool": dice_scores[1],
-            "test/dice_LV_Myo": dice_scores[2],
-            "test/dice_RV_Pool": dice_scores[3],
-            "test/hd_LV_Pool": hd_scores[1],
-            "test/hd_LV_Myo": hd_scores[2],
-            "test/hd_RV_Pool": hd_scores[3],
+            f"test_videos/subject_{subject_idx}": video,
         })
-        del side_by_side, side_by_side_videos
-    
-        # Scores for evaluation
-        pl_module.eval_dice_scores.append(dice_scores)
-        pl_module.eval_hd_scores.append(hd_scores)
-        pl_module.eval_pred_segs.append(pred_seg)
-        pl_module.eval_gt_segs.append(gt_seg)
-        pl_module.eval_gt_ims.append(gt_img)
+        del video
         
+        # Save dice socres and hausdorff distances
+        dice_scores = outputs["dice_scores"]
+        self.test_dice_scores.append(dice_scores)
+        self.test_hd_scores.append(hd_scores)
+        self.test_gt_im.append(gt_img)
+        self.test_gt_seg.append(gt_seg)
+        self.test_pred_seg.append(pred_labels)
         return
     
     def on_train_epoch_start(self, trainer, pl_module):
@@ -195,19 +192,22 @@ class WandbLoggerCallback(Callback):
         self.test_epoch_start_time = time.time()
         
     def on_test_epoch_end(self, trainer, pl_module):
-        all_dice_scores = torch.stack(pl_module.eval_dice_scores, dim=0)
-        avg_dice_scores = all_dice_scores.mean(dim=0)
-        all_hd_scores = torch.stack(pl_module.eval_hd_scores, dim=0)
-        avg_hd_scores = all_hd_scores.mean(dim=0)
-        all_seg_preds = pl_module.eval_pred_segs[-5:]
-        all_seg_gts = pl_module.eval_gt_segs[-5:]
-        all_im_gts = pl_module.eval_gt_ims[-5:]
-        
-        pl_module.results = {"dice_scores": avg_dice_scores,
-                             "hausdorff_distances": avg_hd_scores,
-                             "seg_pred": all_seg_preds,
-                             "seg_gt": all_seg_gts,
-                             "im": all_im_gts}
+        # Save averaged Dice scores, maximal Hausdorff distances, and gt/pred images over test set
+        all_dice = torch.stack(self.test_dice_scores, dim=0)
+        avg_dice = all_dice.mean(dim=0).numpy()
+        all_hd = torch.stack(self.test_hd_scores, dim=0)
+        inf_mask = torch.isinf(all_hd)
+        all_hd[inf_mask] = 0.0
+        max_hd = all_hd.max(dim=0)[0].numpy()
+        im_gts = self.test_gt_im
+        seg_gts = self.test_gt_seg
+        seg_preds = self.test_pred_seg
+        pl_module.test_results = {"avg_dice": avg_dice,
+                                  "max_hd": max_hd,
+                                  "im_gt": im_gts,
+                                  "seg_gt": seg_gts,
+                                  "seg_pred": seg_preds,
+                                  }
         epoch_duration = time.time() - self.test_epoch_start_time
         wandb.log({"test_epoch_duration": epoch_duration})
         return 
