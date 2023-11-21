@@ -12,11 +12,6 @@ class PerceiverEncoder(nn.Module):
         super(PerceiverEncoder, self).__init__()
         self.att_heads = kwargs["enc_att_num_heads"]
         token_size = kwargs["enc_att_token_size"]
-        max_set_size = kwargs.get("enc_att_max_set_size", -1)
-        if isinstance(max_set_size, str):
-            max_set_size = eval(max_set_size)
-        assert isinstance(max_set_size, int)
-        self.max_set_size = max_set_size
 
         a = [SelfAttentionLayer(token_size,
                                 token_size,
@@ -39,16 +34,24 @@ class PerceiverEncoder(nn.Module):
              for i in range(num_hidden_layers)]
         self.ca_layers = nn.ModuleList(a)
         self.out_size = token_size
-        self.needs_padding = coord_size + in_features != token_size
+        self.coord_needs_padding = coord_size != token_size
+        self.val_needs_padding = in_features != token_size
         self.info_token_width = token_size
 
-    def forward(self, coords: torch.Tensor, x: torch.Tensor, **kwargs) -> Union[torch.Tensor, List[torch.Tensor]]:
-        cat_input = torch.cat((coords, x), dim=-1)
-        if self.needs_padding:
-            info_tokens = torch.zeros((coords.shape[0], self.info_token_width), device=coords.device)
-            info_tokens[:, :cat_input.shape[1]] = cat_input
-        else:
-            info_tokens = cat_input
+    def forward(self,
+                coords: Union[torch.Tensor, List[torch.Tensor]],
+                values: Union[torch.Tensor, List[torch.Tensor]],
+                **kwargs) -> Union[torch.Tensor, List[torch.Tensor]]:
+        if self.coord_needs_padding:
+            coords_ = torch.zeros((coords.shape[0], self.info_token_width), device=coords.device)
+            coords_[:, :coords.shape[1]] = coords
+            coords = coords_
+        if self.val_needs_padding:
+            values_ = torch.zeros((coords.shape[0], self.info_token_width), device=coords.device)
+            values_[:, :coords.shape[1]] = values
+            values = values_
+        info_tokens = values + coords
+
         x = self.pos_encoding
         outs = []
         for ca_layer, sa_layer in zip(self.ca_layers, self.sa_layers):

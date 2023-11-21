@@ -12,6 +12,7 @@ class PosEncodingNone(nn.Module):
         self.in_dim = in_dim
         assert self.in_dim is not None
         self.out_dim = self.in_dim
+        self.device = kwargs.get("device", "cuda")
 
     def forward(self, coords):
         return coords
@@ -57,13 +58,12 @@ class PosEncodingNeRFOptimized(PosEncodingNeRF):
 
     def __init__(self, *args, **kwargs):
         super(PosEncodingNeRFOptimized, self).__init__(*args, **kwargs)
-        device = "cpu"
         self.freq_scale = kwargs.get("coords_freq_scale", [1.0])
         assert isinstance(self.freq_scale, (tuple, list,))
         assert len(self.freq_scale) == 1 or len(self.freq_scale) == len(self.num_frequencies)
         if len(self.freq_scale) == 1:
             self.freq_scale = self.freq_scale * self.in_dim
-        self.exp_i_pi = torch.cat([2**torch.arange(f, dtype=torch.float32, device=device, requires_grad=False)[None] * s * np.pi for f, s in zip(self.num_frequencies, self.freq_scale)], dim=1)
+        self.exp_i_pi = torch.cat([2**torch.arange(f, dtype=torch.float32, device=self.device, requires_grad=False)[None] * s * np.pi for f, s in zip(self.num_frequencies, self.freq_scale)], dim=1)
 
     def __repr__(self):
         d = "xyzt"
@@ -87,10 +87,9 @@ class PosEncodingGaussian(PosEncodingNone):
         self.freq_scale = kwargs.get("coords_freq_scale", [1.0])
         assert isinstance(self.num_frequencies, (tuple, list,))
         assert len(self.num_frequencies) == 1
-        device = "cpu"
         if not isinstance(self.freq_scale, float):
-            self.freq_scale = torch.as_tensor(self.freq_scale)[:, None].to(device)
-        self.B_gauss = torch.normal(0.0, 1.0, size=(self.in_dim, self.num_frequencies[0]), requires_grad=False).to(device) * self.freq_scale
+            self.freq_scale = torch.as_tensor(self.freq_scale)[:, None].to(self.device)
+        self.B_gauss = torch.normal(0.0, 1.0, size=(self.in_dim, self.num_frequencies[0]), requires_grad=False).to(self.device) * self.freq_scale
         self.B_gauss_pi = 2. * np.pi * self.B_gauss
 
         # self.out_dim = 2 * total_freqs
@@ -112,7 +111,44 @@ class PosEncodingGaussian(PosEncodingNone):
         return out
 
 
+class PosEncodingCAPE(PosEncodingNone):
+    LUT_NAME = "CAPE"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.K = kwargs["cape_K"]
+        self.out_dim = self.K
+        k = torch.arange(0, self.K//2, device=self.device)[None]
+        # This extends the original paper by allowing 4 dimensions (more could be added)
+        w = torch.cat([torch.pow(10, 2 * k / self.K) * torch.cos(k),
+                       torch.pow(10, 2 * k / self.K) * torch.sin(k),
+                       torch.pow(10, 2 * k / self.K) * (-torch.cos(k)),
+                       torch.pow(10, 2 * k / self.K) * (-torch.sin(k)),
+                       ], dim=0)
+        self.w = w[:self.in_dim]
+
+    def __call__(self, coord: torch.Tensor):
+        picw = torch.pi * (coord @ self.w)
+        cos = torch.cos(picw)
+        sin = torch.sin(picw)
+        out = torch.cat((cos, sin), -1)
+        return out
+
+
+class PosEncodingCAPE3D(PosEncodingCAPE):
+
+    def __call__(self, coord: torch.Tensor):
+        k = torch.arange(0, self.K//2, device=coord.device)[None]
+        wx = torch.pow(10, 2 * k / self.K) * torch.cos(k)
+        wy = torch.pow(10, 2 * k / self.K) * torch.sin(k)
+        cos = torch.cos(torch.pi * (coord[..., :1] @ wx + coord[..., 1:2] @ wy))
+        sin = torch.sin(torch.pi * (coord[..., :1] @ wx + coord[..., 1:2] @ wy))
+        out = torch.cat((cos, sin), -1)
+        return out
+
+
 POS_ENCODING_LUT = {PosEncodingNone.LUT_NAME: PosEncodingNone,
                     PosEncodingNeRFOptimized.LUT_NAME: PosEncodingNeRFOptimized,
                     PosEncodingGaussian.LUT_NAME: PosEncodingGaussian,
+                    PosEncodingCAPE.LUT_NAME: PosEncodingCAPE,
                     }

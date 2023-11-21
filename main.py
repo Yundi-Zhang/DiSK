@@ -26,37 +26,41 @@ CONFIG_SAVE_PATH = "config.yaml"
 
 @dataclass
 class Params:
+    # Trainer params
     check_val_every_n_epoch: int = 100
+    max_epochs: int = 3001
+    early_stopping: bool = False
+
+    # Data stuff
     cache_data: bool = False  # Whether to load all image and segmentations to RAM
     acceleration: int = 4
     use_bboxes: bool = True
-    nerf_enc_num_frequencies: Tuple[int, ...] = (4, 4, 4)
-    nerf_dec_num_frequencies: Tuple[int, ...] = (4, 4, 4)
+    coord_noise_std: float = 1e-4
+    z_seg_relative: int = 4  # Slice number to pick from SAX volume starting from the first LV slice
+
+    # Embedding
+    enc_embedding: str = "cape"  # none, nerf, gaussian, cape
     enc_freq_scale: Tuple[float, ...] = (1.0,)
+    enc_nerf_num_freqs: Tuple[int, ...] = (4, 4, 4)
+    dec_embedding: str = "cape"  # none, nerf, gaussian, cape
+    dec_nerf_num_freqs: Tuple[int, ...] = (4, 4, 4)
     dec_freq_scale: Tuple[float, ...] = (1.0,)
-    latent_size: int = 128
-    enc_embedding: str = "none"  # none, nerf, gaussian
+
+    # Encoder
     enc_att_token_size: int = 32
     enc_hidden_size: int = 128
     enc_num_hidden_layers: int = 2
     enc_att_num_heads: int = 2
-    enc_att_max_set_size: int = 2**14
-    dec_embedding: str = "none"  # none, nerf, gaussian
+    # Decoder
     dec_att_token_size: int = 32
     dec_hidden_size: int = 128
     dec_num_hidden_layers: int = 2
     dec_att_num_heads: int = 1
-    dec_att_max_set_size: int = -1
+
+    # Hyper params
+    use_seg_bce: bool = True
     dropout: float = 0.00
-    coord_noise_std: float = 1e-4
-    max_epochs: int = 3001
-    rec_loss_weight: float = 1.0
-    seg_loss_weight: float = 1.0
-    FT_rec_loss_weight: float = 1.0
-    seg_class_weights: Tuple[float, ...] = (1.0, 1.0, 1.0, 1.0)
     lr: float = 1e-4
-    early_stopping: bool = False
-    latent_reg: float = 0.0
     enc_weight_reg: float = 1e-5
     dec_weight_reg: float = 1e-5  # 1e-5
     activation: str = "relu"  # sine, relu, wire
@@ -82,17 +86,17 @@ def get_dataset_and_model(config: Dict[str, Any], params: Params):
     return train_dataset, val_dataset, test_dataset, model
 
 
-def get_callbacks(params: Params, root_dir: str, exp_name: Optional[str] = None, is_test: Optional[bool] = False):
+def get_callbacks(params: Params, root_dir: str,
+                  exp_name: Optional[str] = None,
+                  wandb_entity: str = None,
+                  is_test: Optional[bool] = False):
     callbacks = []
     # Add ckpt saver for training and define the project name
-    if is_test:
-        project_name = exp_name if exp_name is not None else "KINS_test"
-    else:
-        project_name = exp_name if exp_name is not None else "KINS_train"
-        ckpt_beat_saver = ModelCheckpoint(save_top_k=1, 
+    if not is_test:
+        ckpt_beat_saver = ModelCheckpoint(save_top_k=1,
                                           dirpath=root_dir,
-                                          monitor="val/loss", 
-                                          mode="min", 
+                                          monitor="val/dice_FG",
+                                          mode="max",
                                           save_last=True)
         callbacks += [ckpt_beat_saver]
     # Monitor learning rate
@@ -100,15 +104,16 @@ def get_callbacks(params: Params, root_dir: str, exp_name: Optional[str] = None,
     callbacks += [lr_monitor]
     # Add early stopping
     if params.early_stopping:
-        callbacks += [EarlyStopping(monitor="val/loss", patience=4, mode="min")]
+        callbacks += [EarlyStopping(monitor="val/dice_FG", mode="max", patience=10, )]
     # Add logger
-    logger = WandbLogger(project=project_name, save_dir=root_dir, config=params.__dict__)
-    logger_callback = WandbLoggerCallback(project_name, log_dir=root_dir, config=params.__dict__)
+    wandb.init(entity=wandb_entity, project="KTST", name=exp_name)
+    logger = WandbLogger(save_dir=root_dir, config=params.__dict__)
+    logger_callback = WandbLoggerCallback(log_dir=root_dir, config=params.__dict__)
     callbacks += [logger_callback]
     return callbacks, logger
     
 
-def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None):
+def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None, **kwargs):
     # Config and hyper params
     config = {"params": {}}
     if config_path is not None:
@@ -122,7 +127,6 @@ def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None
     train_dataloader = DataLoader(train_dataset, shuffle=True)
     val_dataloader = DataLoader(val_dataset, shuffle=False)
     
-    train_dataset[0]
     # Model dir creation
     if exp_name is not None:
         root_dir = root_dir / exp_name
@@ -136,7 +140,7 @@ def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None
         yaml.dump(config, f)
 
     # Trainer
-    callbacks, logger = get_callbacks(params, root_dir, exp_name)
+    callbacks, logger = get_callbacks(params, root_dir, exp_name, **kwargs)
     trainer_kwargs = {}
     if logger is not None:
         trainer_kwargs["logger"] = logger
@@ -160,7 +164,7 @@ def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None
     return best_weights_path, params.max_epochs
 
 
-def main_eval(weights_path: str, config_path: Optional[str] = None, exp_name: Optional[str] = None):
+def main_eval(weights_path: str, config_path: Optional[str] = None, exp_name: Optional[str] = None, **kwargs):
     if weights_path is None:
         raise ValueError("weights_path is required.")
     source_dir = Path(weights_path).parent
@@ -190,7 +194,7 @@ def main_eval(weights_path: str, config_path: Optional[str] = None, exp_name: Op
     # Define dataset and load trained model's weights
     data_config = config if "test_data_dir" in config else source_config
     _, _, test_dataset, model = get_dataset_and_model(data_config, params)
-    callbacks, logger = get_callbacks(params, root_dir, exp_name, is_test=True)
+    callbacks, logger = get_callbacks(params, root_dir, exp_name, is_test=True, **kwargs)
     model.eval()
     sd = torch.load(weights_path)['state_dict']
     a = model.load_state_dict(sd, strict=True)
@@ -198,11 +202,11 @@ def main_eval(weights_path: str, config_path: Optional[str] = None, exp_name: Op
     if logger is not None:
         trainer_kwargs["logger"] = logger
     trainer = pl.Trainer(max_epochs=1,
-                        accelerator="gpu",
-                        default_root_dir=root_dir,
-                        enable_checkpointing=False,
-                        callbacks=callbacks,
-                        **trainer_kwargs)
+                         accelerator="gpu",
+                         default_root_dir=root_dir,
+                         enable_checkpointing=False,
+                         callbacks=callbacks,
+                         **trainer_kwargs)
     trainer.test(model, dataloaders=DataLoader(test_dataset, shuffle=False))
 
     # Save test results
@@ -228,6 +232,10 @@ def parse_command_line():
                               help="Custom experiment name", required=False,
                               default=""
                               )
+    parser_train.add_argument("-e", "--wandb_entity",
+                              help="WANDB entity name", required=False,
+                              default=""
+                              )
     # eval
     parser_eval = main_subparsers.add_parser("eval")
     parser_eval.add_argument("-c", "--config",
@@ -240,17 +248,22 @@ def parse_command_line():
                              help="Custom experiment name", required=False,
                              default=""
                              )
+    parser_eval.add_argument("-e", "--wandb_entity",
+                             help="WANDB entity name", required=False,
+                             default=""
+                             )
     return main_parser.parse_args()
 
 
 if __name__ == '__main__':
     args = parse_command_line()
+    config_path, exp_name = args.config, args.exp_name
+    wandb_entity = args.wandb_entity if args.wandb_entity else None
     if args.pipeline is None or args.pipeline == "train":
-        config_path, exp_name = args.config, args.exp_name
-        weights_path, max_epochs = main_train(config_path, exp_name)
+        weights_path, max_epochs = main_train(config_path, exp_name, wandb_entity=wandb_entity)
         main_eval(weights_path, config_path, exp_name+'_test')
     elif args.pipeline == "eval":
-        config_path, weights_path, exp_name = args.config, args.weights, args.exp_name
-        main_eval(weights_path, config_path, exp_name)
+        weights_path = args.weights
+        main_eval(weights_path, config_path, exp_name, wandb_entity=wandb_entity)
     else:
         raise ValueError("Unknown pipeline selected.")

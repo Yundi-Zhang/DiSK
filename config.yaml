@@ -10,35 +10,30 @@ num_test: 100
 log_dir: /vol/unicorn_ssd/users/zyun/logs/KINS
 
 params:
+    # Trainer
+    check_val_every_n_epoch: 2
+    max_epochs: 500
+    early_stopping: False
+
     # Data
     use_bboxes: False
-    cache_data: True
+    cache_data: False
     acceleration: 16
+
     # Encoder
-    enc_embedding: nerf
-    nerf_enc_num_frequencies: [8, 8, 1, 8]
-    # gauss_enc_num_frequencies: [32,]
-    enc_freq_scale: [1.0,]
+    enc_embedding: "nerf"
     enc_num_hidden_layers: 4
     enc_att_num_heads: 1
     enc_att_token_size: 128
     enc_hidden_size: 128
     # Decoder
-    dec_embedding: nerf
-    nerf_dec_num_frequencies: [8, 8, 1, 8]
-    dec_freq_scale: [1.0,]
+    dec_embedding: "nerf"
     dec_num_hidden_layers: 4
     dec_att_num_heads: 1
     dec_att_token_size: 128
     dec_hidden_size: 128
-    # Losses
-    rec_loss_weight: 1.0
-    seg_loss_weight: 1.0
-    seg_class_weights: [1.0, 1.0, 1.0, 1.0]
+
     # Activation function
     activation: relu  # sine, relu, wire
     # Training
-    max_epochs: 6
-    check_val_every_n_epoch: 2
     lr: 1.0e-4
-    early_stopping: False

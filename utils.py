@@ -1,4 +1,4 @@
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 import numpy as np
 import torch
 import nibabel as nib
@@ -80,11 +80,13 @@ class HDRLoss(nn.Module):
         return loss
     
     
-def ifft2c_mri(k, is_numpy=False):
-    if is_numpy:
+def ifft2c_mri(k):
+    if isinstance(k, np.ndarray):
         x = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(k, axes=(0, 1)), norm='ortho', axes=(0, 1)), axes=(0, 1))
-    else:
+    elif isinstance(k, torch.Tensor):
         x = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(k, dim=(0, 1)), norm='ortho', dim=(0, 1)), dim=(0, 1))
+    else:
+        raise ValueError("Not a numpy array or a torch tensor.")
     return x
 
 
@@ -116,22 +118,21 @@ def overlay(seg: np.ndarray, image: np.ndarray, overlay_filename: Optional[str] 
     return image
 
 
-def generate_contour_over_image(image, seg, gt_seg, as_numpy=True):
+def generate_contour_over_image(image: np.ndarray, seg: np.ndarray, gt_seg: np.ndarray) \
+        -> Tuple[np.ndarray, np.ndarray]:
     overlay_pred_list = []
     overlay_gt_list = []
     for frame in range(seg.shape[-1]):
-        frame_pred = seg[..., 0, frame]
-        frame_gt = gt_seg[..., 0, frame]
-        frame_im = image[..., 0, frame]
-        overlay_pred = overlay(frame_pred, normalize_image(frame_im, scale=255.0))
-        overlay_gt = overlay(frame_gt, normalize_image(frame_im, scale=255.0))
-        if as_numpy:
-            overlay_pred_list.append(overlay_pred)
-            overlay_gt_list.append(overlay_gt)
-        else:
-            overlay_pred_list.append(Image.fromarray(overlay_pred.astype('uint8')))
-            overlay_gt_list.append(Image.fromarray(overlay_gt.astype('uint8')))
-    return overlay_pred_list, overlay_gt_list
+        frame_pred = seg[..., frame]
+        frame_gt = gt_seg[..., frame]
+        frame_im = image[..., frame]
+        overlay_pred = overlay(frame_pred, normalize_image(frame_im, scale=255.0)).astype(np.uint8)
+        overlay_gt = overlay(frame_gt, normalize_image(frame_im, scale=255.0)).astype(np.uint8)
+        overlay_pred_list.append(overlay_pred)
+        overlay_gt_list.append(overlay_gt)
+    overlay_pred_arr = np.stack(overlay_pred_list, axis=2)
+    overlay_gt_arr = np.stack(overlay_gt_list, axis=2)
+    return overlay_pred_arr, overlay_gt_arr
 
 
 def ssim(pred, gt, channel_axis=2, data_range=1.0):
@@ -144,11 +145,11 @@ def ssim(pred, gt, channel_axis=2, data_range=1.0):
 
 def hausdorff_distance(pred: torch.Tensor, gt: torch.Tensor):
     """
-    Calculates the Hausdorff distance. pred is in the shape of (T, S, H, W), and gt is in the shape of (C, T, H, W). T is the number of time frames, C is the number of classes, H is the height, and W is the width.
+    Calculates the Hausdorff distance. pred is in the shape of (C, T H, W), and gt is in the shape of (C, T, H, W). T is the number of time frames, C is the number of classes, H is the height, and W is the width.
     """
     assert pred.shape == gt.shape, "The two sets must have the same shape."
     hd = torch.empty(pred.shape[:2])
     for c in range(pred.shape[0]):
         for t in range(pred.shape[1]):
-            hd[c, t] = skhausdorff(pred[c][t].numpy(), gt[c][t].numpy())
+            hd[c, t] = skhausdorff(pred[c][t].detach().cpu().numpy(), gt[c][t].cpu().numpy())
     return hd.mean(dim=1)

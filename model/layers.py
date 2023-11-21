@@ -121,7 +121,7 @@ class SelfAttentionLayer(nn.Module):
             x = x + self._ff_block(self.norm2(x))
         else:
             x = self.norm1(x + self._sa_block(x, attn_mask, key_padding_mask))
-            x = self.norm2(x + self._ff_block(x))  # TODO: Might wanna remove skip connection to allow for variable ouput size
+            x = self.norm2(x + self._ff_block(x))
 
         return x
 

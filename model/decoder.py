@@ -26,12 +26,6 @@ class CrossAttentionDecoder(nn.Module):
                  **kwargs):
         super(CrossAttentionDecoder, self).__init__()
         self.att_heads = kwargs["dec_att_num_heads"]
-        max_set_size = kwargs.get("dec_att_max_set_size", -1)
-        if isinstance(max_set_size, str):
-            max_set_size = eval(max_set_size)
-        assert isinstance(max_set_size, int)
-        self.max_set_size = max_set_size
-        assert isinstance(self.max_set_size, int)
 
         a = [CrossAttentionLayer(enc_out_size,
                                  enc_out_size,
@@ -64,7 +58,5 @@ class CrossAttentionDecoder(nn.Module):
             info_tokens = [info_tokens] * len(self.ca_hid_layers)
 
         for ca_layer, info_t in zip(self.ca_hid_layers, info_tokens):
-            if len(info_t.shape) > 2:
-                info_t = info_t.reshape((-1, info_t.shape[-1]))
             dec_tokens = dec_tokens + ca_layer(dec_tokens, info_t)
         return dec_tokens
