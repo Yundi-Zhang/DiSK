@@ -77,12 +77,12 @@ class PosEncodingNeRFOptimized(PosEncodingNeRF):
         return out
 
 
-class PosEncodingGaussian(PosEncodingNone):
+class PosEncodinFourier(PosEncodingNone):
     ''' https://github.com/tancik/fourier-feature-networks/blob/master/Demo.ipynb '''
-    LUT_NAME = "gaussian"
+    LUT_NAME = "fourier"
 
     def __init__(self, *args, **kwargs):
-        super(PosEncodingGaussian, self).__init__(*args, **kwargs)
+        super(PosEncodinFourier, self).__init__(*args, **kwargs)
         self.num_frequencies = kwargs.get("gauss_num_frequencies")
         self.freq_scale = kwargs.get("coords_freq_scale", [1.0])
         assert isinstance(self.num_frequencies, (tuple, list,))
@@ -135,20 +135,8 @@ class PosEncodingCAPE(PosEncodingNone):
         return out
 
 
-class PosEncodingCAPE3D(PosEncodingCAPE):
-
-    def __call__(self, coord: torch.Tensor):
-        k = torch.arange(0, self.K//2, device=coord.device)[None]
-        wx = torch.pow(10, 2 * k / self.K) * torch.cos(k)
-        wy = torch.pow(10, 2 * k / self.K) * torch.sin(k)
-        cos = torch.cos(torch.pi * (coord[..., :1] @ wx + coord[..., 1:2] @ wy))
-        sin = torch.sin(torch.pi * (coord[..., :1] @ wx + coord[..., 1:2] @ wy))
-        out = torch.cat((cos, sin), -1)
-        return out
-
-
 POS_ENCODING_LUT = {PosEncodingNone.LUT_NAME: PosEncodingNone,
                     PosEncodingNeRFOptimized.LUT_NAME: PosEncodingNeRFOptimized,
-                    PosEncodingGaussian.LUT_NAME: PosEncodingGaussian,
+                    PosEncodinFourier.LUT_NAME: PosEncodinFourier,
                     PosEncodingCAPE.LUT_NAME: PosEncodingCAPE,
                     }
